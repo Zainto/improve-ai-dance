@@ -7,6 +7,24 @@ export default defineConfig({
     port: 5174,
     open: false,
     proxy: {
+      // Python backend (PoseScript + Nemotron)
+      '/api/feedback': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
+      '/api/describe': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
+      '/api/correct': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
+      '/api/health': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
+      // Fallback: Direct NVIDIA API (for when backend is not running)
       '/api/nvidia': {
         target: 'https://integrate.api.nvidia.com',
         changeOrigin: true,

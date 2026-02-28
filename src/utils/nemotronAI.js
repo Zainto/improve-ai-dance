@@ -1,25 +1,89 @@
 /**
- * NVIDIA Nemotron AI Feedback — Uses PoseScript-inspired descriptive vocabulary
- * to generate natural language dance corrections via Nemotron API.
+ * NVIDIA Nemotron AI Feedback — Calls the Python backend which combines
+ * PoseScript-style pose descriptions with Nemotron AI for rich coaching.
  *
- * Proxied via /api/nvidia (Vite dev) or backend /api/feedback (production)
- * Model: nvidia/llama-3.3-nemotron-super-49b-v1
+ * Backend: FastAPI at /api/feedback (proxied via Vite or direct in production)
+ * Fallback: Direct Nemotron API via Vite proxy if backend is unavailable
  */
 
-const API_URL = '/api/nvidia/chat/completions';
+const BACKEND_URL = '/api/feedback';       // Python backend endpoint
+const FALLBACK_URL = '/api/nvidia/chat/completions'; // Direct Nemotron via Vite proxy
 const MODEL = 'nvidia/llama-3.3-nemotron-super-49b-v1';
 
 /**
- * Generate smart AI coaching feedback from session data using Nemotron.
+ * Generate smart AI coaching feedback.
+ * Tries backend first (PoseScript + Nemotron), falls back to direct Nemotron.
  */
-export async function generateAIFeedback(sessionAnalysis, apiKey) {
+export async function generateAIFeedback(sessionAnalysis, apiKey, sessionFrames = null) {
     if (!apiKey) return null;
 
-    const { overallAvg, focusAreas, strengths, timeline, segmentStats } = sessionAnalysis;
-    const prompt = buildPoseScriptPrompt(overallAvg, focusAreas, strengths, timeline, segmentStats);
+    // Try Python backend first (has PoseScript analysis)
+    try {
+        const backendResult = await callBackend(sessionAnalysis, apiKey, sessionFrames);
+        if (backendResult) return backendResult;
+    } catch (err) {
+        console.warn('Backend unavailable, falling back to direct Nemotron:', err.message);
+    }
+
+    // Fallback: direct Nemotron API via Vite proxy
+    return callNemotronDirect(sessionAnalysis, apiKey);
+}
+
+async function callBackend(sessionAnalysis, apiKey, sessionFrames) {
+    const response = await fetch(BACKEND_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            session_analysis: sessionAnalysis,
+            session_frames: sessionFrames,
+            api_key: apiKey,
+        }),
+    });
+
+    if (!response.ok) {
+        const errText = await response.text();
+        console.error('Backend error:', response.status, errText);
+        return null;
+    }
+
+    const data = await response.json();
+    return data.feedback || null;
+}
+
+async function callNemotronDirect(sessionAnalysis, apiKey) {
+    const { overallAvg, focusAreas, strengths, timeline } = sessionAnalysis;
+
+    let prompt = `Analyze my dance session and give PoseScript-style corrections:\n\n`;
+    prompt += `Overall accuracy: ${Math.round(overallAvg)}%\n\n`;
+
+    if (focusAreas?.length > 0) {
+        prompt += `PROBLEM AREAS:\n`;
+        for (const area of focusAreas.slice(0, 3)) {
+            prompt += `- ${area.label}: ${Math.round(area.avg)}% match`;
+            if (area.trend > 5) prompt += ` [improving]`;
+            if (area.trend < -5) prompt += ` [declining]`;
+            prompt += `\n`;
+        }
+        prompt += `\n`;
+    }
+
+    if (strengths?.length > 0) {
+        prompt += `STRONG AREAS: ${strengths.map(s => `${s.label} (${Math.round(s.avg)}%)`).join(', ')}\n\n`;
+    }
+
+    if (timeline?.length > 0) {
+        prompt += `TIMELINE:\n`;
+        for (const phase of timeline) {
+            prompt += `- ${phase.label}: ${phase.avg}%`;
+            if (phase.weakestSegment) prompt += ` (weakest: ${phase.weakestSegment})`;
+            prompt += `\n`;
+        }
+    }
+
+    prompt += `\nGive specific corrections. What should I practice first?`;
 
     try {
-        const response = await fetch(API_URL, {
+        const response = await fetch(FALLBACK_URL, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -28,88 +92,25 @@ export async function generateAIFeedback(sessionAnalysis, apiKey) {
             body: JSON.stringify({
                 model: MODEL,
                 messages: [
-                    { role: 'system', content: SYSTEM_PROMPT },
+                    { role: 'system', content: 'You are DanceCoach AI, an expert dance instructor. Give warm, specific feedback under 200 words. Use dance terminology and end with encouragement.' },
                     { role: 'user', content: prompt }
                 ],
                 max_tokens: 400,
                 temperature: 0.7,
-                top_p: 0.9,
                 stream: false,
             }),
         });
 
         if (!response.ok) {
             const errText = await response.text();
-            console.error('Nemotron API error:', response.status, errText);
             return `API Error (${response.status}): ${errText}`;
         }
 
         const data = await response.json();
         return data.choices?.[0]?.message?.content || 'No response from AI.';
     } catch (err) {
-        console.error('Nemotron API call failed:', err);
-        return `Connection error: ${err.message}. Make sure the dev server is running.`;
+        return `Connection error: ${err.message}`;
     }
-}
-
-// PoseScript-inspired system prompt — uses the vocabulary from NAVER's PoseScript
-// and PoseFix papers to generate natural, body-aware corrections
-const SYSTEM_PROMPT = `You are DanceCoach AI, an expert dance instructor powered by PoseScript-style body awareness.
-
-You describe poses and corrections using precise anatomical language inspired by PoseScript (ECCV 2022) and PoseFix (ICCV 2023):
-
-BODY PART VOCABULARY:
-- Arms: "extended outward", "bent at the elbow", "raised overhead", "reaching forward", "tucked close to the body"
-- Legs: "planted wide", "knee bent deeply", "kicked up high", "stepping forward", "crossed behind"
-- Torso: "leaning forward", "twisted to the side", "upright and centered", "hips shifted", "core engaged"
-- Head: "tilted to the side", "looking over the shoulder", "chin tucked", "facing forward"
-
-CORRECTION PATTERNS (from PoseFix style):
-- Compare the target pose to what was done: "Your left arm should be extended overhead, but it was bent at the elbow"
-- Give spatial corrections: "Rotate your hips more to the left", "Widen your stance"
-- Describe the movement quality: "The movement needs to be more fluid", "Snap into the position faster"
-
-RULES:
-- Keep under 200 words
-- Be warm, encouraging, and specific
-- Focus on the 2-3 most impactful corrections
-- Use the body vocabulary above naturally
-- End with encouragement and one specific thing to practice first
-- Reference specific timestamps if provided`;
-
-function buildPoseScriptPrompt(overallAvg, focusAreas, strengths, timeline, segmentStats) {
-    let p = `Analyze my dance session and give PoseScript-style corrections:\n\n`;
-    p += `Overall accuracy: ${Math.round(overallAvg)}%\n\n`;
-
-    if (focusAreas.length > 0) {
-        p += `PROBLEM AREAS (need correction):\n`;
-        for (const area of focusAreas.slice(0, 3)) {
-            p += `- ${area.label}: ${Math.round(area.avg)}% match`;
-            if (area.trend > 5) p += ` [improving +${Math.round(area.trend)}%]`;
-            if (area.trend < -5) p += ` [declining ${Math.round(area.trend)}%]`;
-            if (area.consistency < 50) p += ` [very inconsistent]`;
-            if (area.struggles?.length > 0) p += ` [${area.struggles.length} periods of struggle]`;
-            p += `\n`;
-        }
-        p += `\n`;
-    }
-
-    if (strengths.length > 0) {
-        p += `STRONG AREAS: ${strengths.map(s => `${s.label} (${Math.round(s.avg)}%)`).join(', ')}\n\n`;
-    }
-
-    if (timeline.length > 0) {
-        p += `TIMELINE:\n`;
-        for (const phase of timeline) {
-            p += `- ${phase.label}: ${phase.avg}%`;
-            if (phase.weakestSegment) p += ` (weakest: ${phase.weakestSegment} at ${phase.weakestScore}%)`;
-            p += `\n`;
-        }
-        p += `\n`;
-    }
-
-    p += `Give me specific, PoseScript-style corrections. Describe what my body SHOULD be doing vs what it IS doing. What should I practice first?`;
-    return p;
 }
 
 export function getStoredApiKey() {
