@@ -64,6 +64,7 @@ export default function App() {
         setComparison(null);
         setSessionTime(0);
         sampleCountRef.current = 0;
+        sessionDataRef.current = [];
         resetAudioCoach();
         initVoices();
         clearRecording();
@@ -108,12 +109,19 @@ export default function App() {
 
                     sampleCountRef.current++;
                     if (sampleCountRef.current % 3 === 0) {
-                        setSessionData(prev => [...prev, result]);
+                        setSessionData(prev => {
+                            const next = [...prev, result];
+                            sessionDataRef.current = next;
+                            return next;
+                        });
                     }
                 }
             }
         }, 100);
     }, [inputMode]);
+
+    // Use a ref so handleStop always sees latest sessionData
+    const sessionDataRef = useRef([]);
 
     const handleStop = useCallback(async () => {
         resetAudioCoach();
@@ -131,20 +139,22 @@ export default function App() {
         if (videoPlayerRef.current) {
             videoPlayerRef.current.pause();
         }
+        if (userVideoRef.current) {
+            userVideoRef.current.pause();
+        }
 
         // Stop recording BEFORE killing the webcam stream
-        // (setIsActive(false) triggers WebcamFeed to destroy the stream)
         const recUrl = await stopRecording();
         if (recUrl) setRecordingUrl(recUrl);
 
         // NOW deactivate webcam (kills stream)
         setIsActive(false);
 
-        // Show summary if we have enough data
-        if (sessionData.length > 5) {
+        // Show summary if we have enough data (use ref for latest)
+        if (sessionDataRef.current.length > 5) {
             setView(VIEWS.SUMMARY);
         }
-    }, [sessionData]);
+    }, []); // No dependencies — uses refs
 
     // Cleanup on unmount
     useEffect(() => {
