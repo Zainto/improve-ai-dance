@@ -4,6 +4,7 @@ import WebcamFeed from './components/WebcamFeed';
 import ScoreDisplay from './components/ScoreDisplay';
 import SessionSummary from './components/SessionSummary';
 import { comparePoses } from './utils/poseSimilarity';
+import { generateVoiceCue, setAudioCoachEnabled, resetAudioCoach } from './utils/audioCoach';
 
 const VIEWS = { WELCOME: 'welcome', PRACTICE: 'practice', SUMMARY: 'summary' };
 
@@ -17,6 +18,7 @@ export default function App() {
     const [comparison, setComparison] = useState(null);
     const [sessionData, setSessionData] = useState([]);
     const [sessionTime, setSessionTime] = useState(0);
+    const [voiceCoach, setVoiceCoach] = useState(true);
 
     const videoPlayerRef = useRef(null);
     const webcamRef = useRef(null);
@@ -56,6 +58,7 @@ export default function App() {
         setComparison(null);
         setSessionTime(0);
         sampleCountRef.current = 0;
+        resetAudioCoach();
 
         // Start reference video
         if (videoPlayerRef.current) {
@@ -78,6 +81,9 @@ export default function App() {
                 if (result) {
                     setComparison(result);
 
+                    // Real-time voice coaching
+                    generateVoiceCue(result, refPose, userPose);
+
                     // Sample every 3rd comparison for session history
                     sampleCountRef.current++;
                     if (sampleCountRef.current % 3 === 0) {
@@ -90,6 +96,7 @@ export default function App() {
 
     const handleStop = useCallback(() => {
         setIsActive(false);
+        resetAudioCoach();
 
         if (videoPlayerRef.current) {
             videoPlayerRef.current.pause();
@@ -299,6 +306,18 @@ export default function App() {
                                 onClick={() => setMirrored(!mirrored)}
                             >
                                 🪞 Mirror
+                            </button>
+
+                            {/* Voice Coach */}
+                            <button
+                                className={`toggle-btn ${voiceCoach ? 'active' : ''}`}
+                                onClick={() => {
+                                    const next = !voiceCoach;
+                                    setVoiceCoach(next);
+                                    setAudioCoachEnabled(next);
+                                }}
+                            >
+                                {voiceCoach ? '🔊' : '🔇'} Voice Coach
                             </button>
                         </div>
 
