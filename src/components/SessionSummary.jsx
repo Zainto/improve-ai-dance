@@ -1,31 +1,129 @@
-import { useMemo } from 'react';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, Cell } from 'recharts';
+import { useMemo, useState, useRef, useEffect, useCallback } from 'react';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceDot } from 'recharts';
 import { BODY_SEGMENTS, scoreToColor } from '../utils/poseSimilarity';
 import { analyzeSession } from '../utils/feedbackEngine';
+import { generateAIFeedback, getStoredApiKey, storeApiKey } from '../utils/nemotronAI';
 
 /**
- * Session Summary — Shows grouped mistake analysis with actionable feedback.
+ * Session Summary — Grouped mistakes, interactive chart, recording playback, Nemotron AI.
  */
-export default function SessionSummary({ sessionData, onClose }) {
+export default function SessionSummary({ sessionData, onClose, recordingUrl, videoFile }) {
     const analysis = useMemo(() => analyzeSession(sessionData), [sessionData]);
+    const [selectedPoint, setSelectedPoint] = useState(null);
+    const [aiResponse, setAiResponse] = useState(null);
+    const [aiLoading, setAiLoading] = useState(false);
+    const [apiKey, setApiKey] = useState(getStoredApiKey());
+    const [showKeyInput, setShowKeyInput] = useState(false);
 
+    const refVideoRef = useRef(null);
+    const recVideoRef = useRef(null);
+    const recVideoUrl = useMemo(() => recordingUrl || null, [recordingUrl]);
+    const refVideoUrl = useMemo(() => videoFile ? URL.createObjectURL(videoFile) : null, [videoFile]);
+
+    // Cleanup URLs
+    useEffect(() => {
+        return () => {
+            if (refVideoUrl) URL.revokeObjectURL(refVideoUrl);
+        };
+    }, [refVideoUrl]);
+
+    // Chart data with timestamps
     const chartData = useMemo(() => {
         if (!sessionData || sessionData.length === 0) return [];
-        const sampleInterval = Math.max(1, Math.floor(sessionData.length / 50));
+        const sampleInterval = Math.max(1, Math.floor(sessionData.length / 80));
         const startTime = sessionData[0].timestamp;
+        const duration = (sessionData[sessionData.length - 1].timestamp - startTime) / 1000;
+
         return sessionData
             .filter((_, i) => i % sampleInterval === 0)
-            .map((d) => ({
-                time: `${Math.round((d.timestamp - startTime) / 1000)}s`,
-                score: Math.round(d.overall)
-            }));
+            .map((d, idx) => {
+                const sec = (d.timestamp - startTime) / 1000;
+                return {
+                    time: `${Math.round(sec)}s`,
+                    timeSec: sec,
+                    score: Math.round(d.overall),
+                    index: idx,
+                    // Find weakest segment at this point
+                    weakest: Object.entries(d.segments)
+                        .filter(([_, v]) => v !== null)
+                        .sort((a, b) => a[1] - b[1])[0],
+                };
+            });
     }, [sessionData]);
+
+    // Find dips (local minima)
+    const dips = useMemo(() => {
+        if (chartData.length < 5) return [];
+        const result = [];
+        for (let i = 2; i < chartData.length - 2; i++) {
+            const pt = chartData[i];
+            const before = chartData[i - 1].score;
+            const after = chartData[i + 1].score;
+            if (pt.score < before && pt.score < after && pt.score < 60) {
+                result.push(pt);
+            }
+        }
+        return result.slice(0, 5); // max 5 dips shown
+    }, [chartData]);
+
+    // Handle chart click
+    const handleChartClick = useCallback((data) => {
+        if (!data || !data.activePayload) return;
+        const point = data.activePayload[0]?.payload;
+        if (!point) return;
+
+        setSelectedPoint(point);
+
+        // Seek videos to that timestamp
+        const seekTime = point.timeSec;
+        if (refVideoRef.current) {
+            refVideoRef.current.currentTime = seekTime;
+            refVideoRef.current.pause();
+        }
+        if (recVideoRef.current) {
+            recVideoRef.current.currentTime = seekTime;
+            recVideoRef.current.pause();
+        }
+    }, []);
+
+    // Play from selected point
+    const playFromPoint = () => {
+        if (refVideoRef.current) refVideoRef.current.play();
+        if (recVideoRef.current) recVideoRef.current.play();
+    };
+
+    // Sync playback
+    useEffect(() => {
+        const ref = refVideoRef.current;
+        const rec = recVideoRef.current;
+        if (!ref || !rec) return;
+
+        const sync = () => {
+            if (Math.abs(ref.currentTime - rec.currentTime) > 0.3) {
+                rec.currentTime = ref.currentTime;
+            }
+        };
+        ref.addEventListener('timeupdate', sync);
+        return () => ref.removeEventListener('timeupdate', sync);
+    }, [refVideoUrl, recVideoUrl]);
+
+    // Nemotron AI feedback
+    const handleGetAIFeedback = async () => {
+        if (!apiKey) { setShowKeyInput(true); return; }
+        setAiLoading(true);
+        setAiResponse(null);
+        storeApiKey(apiKey);
+
+        const result = await generateAIFeedback(analysis, apiKey);
+        setAiResponse(result || 'Could not get AI feedback. Check your API key and try again.');
+        setAiLoading(false);
+    };
 
     if (!analysis || analysis.overallGrade === 'N/A') {
         return (
             <div className="card fade-in">
                 <div className="card-title">Session Summary</div>
-                <p style={{ color: 'var(--text-muted)' }}>Not enough data for feedback. Try a longer session!</p>
+                <p style={{ color: 'var(--text-muted)' }}>Not enough data. Try a longer session!</p>
             </div>
         );
     }
@@ -48,7 +146,190 @@ export default function SessionSummary({ sessionData, onClose }) {
                 </div>
             </div>
 
-            {/* ─── Top Tips ─── */}
+            {/* ─── Interactive Chart ─── */}
+            <div className="card" style={{ marginBottom: '16px' }}>
+                <div className="card-title">📈 Click anywhere on the chart to see that moment</div>
+                <div className="chart-container" style={{ cursor: 'crosshair' }}>
+                    <ResponsiveContainer width="100%" height="100%">
+                        <LineChart data={chartData} onClick={handleChartClick}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="rgba(165,168,208,0.08)" />
+                            <XAxis dataKey="time" tick={{ fill: '#6b6e99', fontSize: 11 }} />
+                            <YAxis domain={[0, 100]} tick={{ fill: '#6b6e99', fontSize: 11 }} />
+                            <Tooltip
+                                contentStyle={{
+                                    background: '#161940', border: '1px solid rgba(165,168,208,0.15)',
+                                    borderRadius: '10px', color: '#f0f0ff', fontSize: '13px'
+                                }}
+                                formatter={(val) => [`${val}%`, 'Accuracy']}
+                            />
+                            <Line type="monotone" dataKey="score" stroke="#a855f7" strokeWidth={2} dot={false} name="Accuracy" />
+
+                            {/* Mark the dips as red dots */}
+                            {dips.map((dip, i) => (
+                                <ReferenceDot
+                                    key={i}
+                                    x={dip.time}
+                                    y={dip.score}
+                                    r={6}
+                                    fill="#ef4444"
+                                    stroke="#fff"
+                                    strokeWidth={2}
+                                />
+                            ))}
+
+                            {/* Selected point */}
+                            {selectedPoint && (
+                                <ReferenceDot
+                                    x={selectedPoint.time}
+                                    y={selectedPoint.score}
+                                    r={8}
+                                    fill="#a855f7"
+                                    stroke="#fff"
+                                    strokeWidth={2}
+                                />
+                            )}
+                        </LineChart>
+                    </ResponsiveContainer>
+                </div>
+
+                {/* Selected point info */}
+                {selectedPoint && (
+                    <div className="fade-in" style={{
+                        marginTop: '12px', padding: '12px 16px', background: 'rgba(168,85,247,0.1)',
+                        borderRadius: '10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center'
+                    }}>
+                        <div>
+                            <span style={{ fontWeight: 700 }}>At {selectedPoint.time}: </span>
+                            <span style={{ color: scoreToColor(selectedPoint.score) }}>
+                                {selectedPoint.score}% accuracy
+                            </span>
+                            {selectedPoint.weakest && (
+                                <span style={{ color: 'var(--text-muted)', marginLeft: '12px' }}>
+                                    Weakest: {BODY_SEGMENTS[selectedPoint.weakest[0]]?.emoji} {BODY_SEGMENTS[selectedPoint.weakest[0]]?.label} ({Math.round(selectedPoint.weakest[1])}%)
+                                </span>
+                            )}
+                        </div>
+                        {(recVideoUrl || refVideoUrl) && (
+                            <button className="btn btn-primary" onClick={playFromPoint} style={{ padding: '6px 16px', fontSize: '13px' }}>
+                                ▶ Play from here
+                            </button>
+                        )}
+                    </div>
+                )}
+            </div>
+
+            {/* ─── Recording Playback ─── */}
+            {(recVideoUrl || refVideoUrl) && (
+                <div className="card" style={{ marginBottom: '16px' }}>
+                    <div className="card-title">🎬 Session Playback — Compare Side by Side</div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                        {refVideoUrl && (
+                            <div style={{ position: 'relative' }}>
+                                <video
+                                    ref={refVideoRef}
+                                    src={refVideoUrl}
+                                    controls
+                                    playsInline
+                                    muted
+                                    style={{ width: '100%', borderRadius: '10px', background: '#000' }}
+                                />
+                                <span style={{
+                                    position: 'absolute', top: '8px', left: '8px', padding: '2px 10px',
+                                    borderRadius: '20px', fontSize: '11px', fontWeight: 600,
+                                    background: 'rgba(0,0,0,0.7)', color: '#38bdf8'
+                                }}>Reference</span>
+                            </div>
+                        )}
+                        {recVideoUrl && (
+                            <div style={{ position: 'relative' }}>
+                                <video
+                                    ref={recVideoRef}
+                                    src={recVideoUrl}
+                                    controls
+                                    playsInline
+                                    muted
+                                    style={{ width: '100%', borderRadius: '10px', background: '#000', transform: 'scaleX(-1)' }}
+                                />
+                                <span style={{
+                                    position: 'absolute', top: '8px', left: '8px', padding: '2px 10px',
+                                    borderRadius: '20px', fontSize: '11px', fontWeight: 600,
+                                    background: 'rgba(0,0,0,0.7)', color: '#ec4899'
+                                }}>Your Recording</span>
+                            </div>
+                        )}
+                    </div>
+                    {!recVideoUrl && (
+                        <p style={{ fontSize: '13px', color: 'var(--text-muted)', marginTop: '8px', textAlign: 'center' }}>
+                            💡 Tip: Your next session will be recorded automatically for playback
+                        </p>
+                    )}
+                </div>
+            )}
+
+            {/* ─── Nemotron AI Feedback ─── */}
+            <div className="card" style={{ marginBottom: '16px', border: '1px solid rgba(118,185,0,0.3)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                    <div className="card-title" style={{ marginBottom: 0 }}>
+                        🧠 AI Coach Feedback <span style={{ fontSize: '10px', color: '#76b900', fontWeight: 500, marginLeft: '4px' }}>powered by NVIDIA Nemotron</span>
+                    </div>
+                    <button
+                        className="btn btn-primary"
+                        onClick={handleGetAIFeedback}
+                        disabled={aiLoading}
+                        style={{ padding: '6px 16px', fontSize: '13px' }}
+                    >
+                        {aiLoading ? '⏳ Thinking...' : aiResponse ? '🔄 Refresh' : '✨ Get AI Feedback'}
+                    </button>
+                </div>
+
+                {showKeyInput && !apiKey && (
+                    <div className="fade-in" style={{
+                        display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '12px',
+                        padding: '12px', background: 'rgba(255,255,255,0.03)', borderRadius: '10px'
+                    }}>
+                        <input
+                            type="password"
+                            placeholder="Enter NVIDIA API key..."
+                            value={apiKey}
+                            onChange={(e) => setApiKey(e.target.value)}
+                            style={{
+                                flex: 1, padding: '8px 12px', borderRadius: '8px',
+                                border: '1px solid var(--border)', background: 'var(--bg-secondary)',
+                                color: 'var(--text-primary)', fontFamily: 'var(--font)', fontSize: '13px'
+                            }}
+                        />
+                        <button className="btn btn-primary" onClick={handleGetAIFeedback} style={{ padding: '8px 16px', fontSize: '13px' }}>
+                            Submit
+                        </button>
+                    </div>
+                )}
+
+                {aiLoading && (
+                    <div style={{ textAlign: 'center', padding: '20px' }}>
+                        <div className="spinner" style={{ margin: '0 auto 12px' }} />
+                        <div style={{ fontSize: '13px', color: 'var(--text-muted)' }}>Nemotron is analyzing your session...</div>
+                    </div>
+                )}
+
+                {aiResponse && !aiLoading && (
+                    <div className="fade-in" style={{
+                        padding: '16px', background: 'rgba(118,185,0,0.06)', borderRadius: '10px',
+                        border: '1px solid rgba(118,185,0,0.15)', lineHeight: 1.7, fontSize: '14px',
+                        color: 'var(--text-secondary)', whiteSpace: 'pre-wrap'
+                    }}>
+                        {aiResponse}
+                    </div>
+                )}
+
+                {!aiResponse && !aiLoading && !showKeyInput && (
+                    <p style={{ fontSize: '13px', color: 'var(--text-muted)' }}>
+                        Get personalized coaching advice powered by NVIDIA's Nemotron AI model.
+                        Requires an API key from <a href="https://build.nvidia.com" target="_blank" rel="noopener" style={{ color: '#76b900' }}>build.nvidia.com</a>
+                    </p>
+                )}
+            </div>
+
+            {/* ─── Key Takeaways ─── */}
             <div className="card" style={{ marginBottom: '16px', border: '1px solid rgba(168,85,247,0.2)', background: 'var(--gradient-brand-subtle)' }}>
                 <div className="card-title">🎯 Key Takeaways</div>
                 {tips.map((tip, i) => (
@@ -62,7 +343,7 @@ export default function SessionSummary({ sessionData, onClose }) {
                 ))}
             </div>
 
-            {/* ─── Focus Areas (Grouped Mistakes) ─── */}
+            {/* ─── Focus Areas ─── */}
             {focusAreas.length > 0 && (
                 <div style={{ marginBottom: '16px' }}>
                     <h3 style={{ fontSize: '1.1rem', marginBottom: '12px', color: '#ef4444' }}>
@@ -90,30 +371,21 @@ export default function SessionSummary({ sessionData, onClose }) {
                                 </div>
                             </div>
 
-                            {/* Feedback paragraphs */}
-                            <div style={{ marginBottom: '12px' }}>
-                                {area.feedback.map((line, j) => (
-                                    <p key={j} style={{
-                                        fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: 1.6,
-                                        margin: '0 0 6px 0'
-                                    }}>{line}</p>
-                                ))}
-                            </div>
+                            {area.feedback.map((line, j) => (
+                                <p key={j} style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: 1.6, margin: '0 0 6px 0' }}>
+                                    {line}
+                                </p>
+                            ))}
 
-                            {/* Exercises */}
-                            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '10px' }}>
                                 {area.exercises.map((ex, j) => (
                                     <div key={j} style={{
                                         flex: '1 1 200px', padding: '10px 14px',
                                         background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border)',
                                         borderRadius: '10px'
                                     }}>
-                                        <div style={{ fontWeight: 600, fontSize: '0.8rem', color: 'var(--accent-1)' }}>
-                                            💪 {ex.name}
-                                        </div>
-                                        <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '2px' }}>
-                                            {ex.desc}
-                                        </div>
+                                        <div style={{ fontWeight: 600, fontSize: '0.8rem', color: 'var(--accent-1)' }}>💪 {ex.name}</div>
+                                        <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '2px' }}>{ex.desc}</div>
                                     </div>
                                 ))}
                             </div>
@@ -150,7 +422,7 @@ export default function SessionSummary({ sessionData, onClose }) {
                 </div>
             )}
 
-            {/* ─── Timeline Phases ─── */}
+            {/* ─── Timeline ─── */}
             {timeline.length > 0 && (
                 <div style={{ marginBottom: '16px' }}>
                     <h3 style={{ fontSize: '1.1rem', marginBottom: '12px' }}>⏱ Performance Timeline</h3>
@@ -166,29 +438,6 @@ export default function SessionSummary({ sessionData, onClose }) {
                                 )}
                             </div>
                         ))}
-                    </div>
-                </div>
-            )}
-
-            {/* ─── Accuracy Over Time Chart ─── */}
-            {chartData.length > 2 && (
-                <div className="card">
-                    <div className="card-title">Accuracy Over Time</div>
-                    <div className="chart-container">
-                        <ResponsiveContainer width="100%" height="100%">
-                            <LineChart data={chartData}>
-                                <CartesianGrid strokeDasharray="3 3" stroke="rgba(165,168,208,0.08)" />
-                                <XAxis dataKey="time" tick={{ fill: '#6b6e99', fontSize: 11 }} />
-                                <YAxis domain={[0, 100]} tick={{ fill: '#6b6e99', fontSize: 11 }} />
-                                <Tooltip
-                                    contentStyle={{
-                                        background: '#161940', border: '1px solid rgba(165,168,208,0.15)',
-                                        borderRadius: '10px', color: '#f0f0ff'
-                                    }}
-                                />
-                                <Line type="monotone" dataKey="score" stroke="#a855f7" strokeWidth={2} dot={false} name="Accuracy %" />
-                            </LineChart>
-                        </ResponsiveContainer>
                     </div>
                 </div>
             )}

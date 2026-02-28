@@ -4,7 +4,8 @@ import WebcamFeed from './components/WebcamFeed';
 import ScoreDisplay from './components/ScoreDisplay';
 import SessionSummary from './components/SessionSummary';
 import { comparePoses } from './utils/poseSimilarity';
-import { generateVoiceCue, setAudioCoachEnabled, resetAudioCoach } from './utils/audioCoach';
+import { generateVoiceCue, setAudioCoachEnabled, resetAudioCoach, initVoices } from './utils/audioCoach';
+import { startRecording, stopRecording, clearRecording } from './utils/sessionRecorder';
 
 const VIEWS = { WELCOME: 'welcome', PRACTICE: 'practice', SUMMARY: 'summary' };
 
@@ -19,6 +20,7 @@ export default function App() {
     const [sessionData, setSessionData] = useState([]);
     const [sessionTime, setSessionTime] = useState(0);
     const [voiceCoach, setVoiceCoach] = useState(true);
+    const [recordingUrl, setRecordingUrl] = useState(null);
 
     const videoPlayerRef = useRef(null);
     const webcamRef = useRef(null);
@@ -59,12 +61,21 @@ export default function App() {
         setSessionTime(0);
         sampleCountRef.current = 0;
         resetAudioCoach();
+        initVoices(); // Pre-load TTS voices
+        clearRecording();
+        setRecordingUrl(null);
 
         // Start reference video
         if (videoPlayerRef.current) {
             videoPlayerRef.current.seekTo(0);
             videoPlayerRef.current.play();
         }
+
+        // Start recording webcam (with small delay for stream to be ready)
+        setTimeout(() => {
+            const stream = webcamRef.current?.getStream();
+            if (stream) startRecording(stream);
+        }, 500);
 
         // Session timer
         sessionTimerRef.current = setInterval(() => {
@@ -94,13 +105,17 @@ export default function App() {
         }, 100);
     }, []);
 
-    const handleStop = useCallback(() => {
+    const handleStop = useCallback(async () => {
         setIsActive(false);
         resetAudioCoach();
 
         if (videoPlayerRef.current) {
             videoPlayerRef.current.pause();
         }
+
+        // Stop recording and get URL
+        const recUrl = await stopRecording();
+        if (recUrl) setRecordingUrl(recUrl);
 
         if (comparisonLoopRef.current) {
             clearInterval(comparisonLoopRef.current);
@@ -338,6 +353,8 @@ export default function App() {
                 <SessionSummary
                     sessionData={sessionData}
                     onClose={() => setView(VIEWS.PRACTICE)}
+                    recordingUrl={recordingUrl}
+                    videoFile={videoFile}
                 />
             )}
         </div>

@@ -26,6 +26,7 @@ const WebcamFeed = forwardRef(function WebcamFeed({ isActive, segmentScores, mir
 
     useImperativeHandle(ref, () => ({
         getCurrentPose: () => currentPoseRef.current,
+        getStream: () => streamRef.current,
     }));
 
     // Init MediaPipe

@@ -1,187 +1,150 @@
 /**
- * Audio Coach — Real-time voice feedback using Web Speech API
- * Provides spoken corrections like "Kick your left leg further up"
+ * Audio Coach v2 — Faster, less laggy real-time voice feedback
+ *
+ * Fixes:
+ * - Pre-initializes voices on first user interaction
+ * - Uses shorter, punchier cues (2-4 words max)
+ * - Better debouncing with segment rotation
+ * - Cancels previous speech immediately before new
  */
 
-const COOLDOWN_MS = 4000; // Minimum time between voice cues
-const SCORE_THRESHOLD_SPEAK = 55; // Only speak when a segment is below this
-const SCORE_THRESHOLD_PRAISE = 85; // Praise when above this
+const COOLDOWN_MS = 3500;
+const SCORE_THRESHOLD = 50;
+const PRAISE_THRESHOLD = 88;
 
 let lastSpeakTime = 0;
 let lastSpokenSegment = null;
+let spokenCount = 0;
 let enabled = true;
-let utteranceQueue = [];
+let voicesReady = false;
+let preferredVoice = null;
 
-// ─── Direction Detection ───
-// Determines if a body part needs to go higher/lower/wider etc.
-// by comparing normalized poses
-const JOINT_NAMES = {
-    11: 'left shoulder', 12: 'right shoulder',
-    13: 'left elbow', 14: 'right elbow',
-    15: 'left wrist', 16: 'right wrist',
-    23: 'left hip', 24: 'right hip',
-    25: 'left knee', 26: 'right knee',
-    27: 'left ankle', 28: 'right ankle',
+// Pre-load voices (call on first user click)
+export function initVoices() {
+    if (voicesReady) return;
+    const synth = window.speechSynthesis;
+    if (!synth) return;
+
+    // Force voice loading
+    synth.getVoices();
+    synth.onvoiceschanged = () => {
+        const voices = synth.getVoices();
+        preferredVoice = voices.find(v =>
+            v.name.includes('Samantha') || v.name.includes('Karen') ||
+            v.name.includes('Google US') || v.name.includes('Daniel')
+        ) || voices.find(v => v.lang.startsWith('en')) || voices[0];
+        voicesReady = true;
+    };
+    // Trigger load
+    synth.getVoices();
+
+    // Warm up with silent utterance
+    const warm = new SpeechSynthesisUtterance('');
+    warm.volume = 0;
+    synth.speak(warm);
+}
+
+const SEGMENT_JOINTS = {
+    leftArm: { tip: 15, base: 13, label: 'left arm' },
+    rightArm: { tip: 16, base: 14, label: 'right arm' },
+    leftLeg: { tip: 27, base: 25, label: 'left leg' },
+    rightLeg: { tip: 28, base: 26, label: 'right leg' },
+    torso: { tip: 11, base: 23, label: 'torso' },
+    head: { tip: 0, base: 11, label: 'head' },
 };
 
-const SEGMENT_TO_JOINTS = {
-    leftArm: { primary: [15, 13], label: 'left arm' },
-    rightArm: { primary: [16, 14], label: 'right arm' },
-    leftLeg: { primary: [27, 25], label: 'left leg' },
-    rightLeg: { primary: [28, 26], label: 'right leg' },
-    torso: { primary: [11, 23], label: 'torso' },
-    head: { primary: [0, 11], label: 'head' },
-};
+// Short, punchy cues — designed to be spoken in <1 second
+function getShortCue(segKey, refLandmarks, userLandmarks) {
+    const seg = SEGMENT_JOINTS[segKey];
+    if (!seg || !refLandmarks || !userLandmarks) return `Watch your ${seg?.label || segKey}`;
 
-/**
- * Analyze the difference between reference and user pose for a specific segment
- * and return a human-readable correction.
- */
-function analyzeDifference(refLandmarks, userLandmarks, segmentKey) {
-    const seg = SEGMENT_TO_JOINTS[segmentKey];
-    if (!seg) return null;
+    const ref = refLandmarks[seg.tip];
+    const user = userLandmarks[seg.tip];
+    const refBase = refLandmarks[seg.base];
+    const userBase = userLandmarks[seg.base];
 
-    const [tipIdx, baseIdx] = seg.primary;
-    const ref = refLandmarks[tipIdx];
-    const user = userLandmarks[tipIdx];
-    const refBase = refLandmarks[baseIdx];
-    const userBase = userLandmarks[baseIdx];
+    if (!ref || !user || (ref.visibility || 0) < 0.4 || (user.visibility || 0) < 0.4) {
+        return `Watch ${seg.label}`;
+    }
 
-    if (!ref || !user || !refBase || !userBase) return null;
-    if ((ref.visibility || 0) < 0.4 || (user.visibility || 0) < 0.4) return null;
-
-    // Calculate position differences relative to base
-    const refRelY = ref.y - refBase.y;
-    const userRelY = user.y - userBase.y;
-    const refRelX = ref.x - refBase.x;
-    const userRelX = user.x - userBase.x;
-
-    const yDiff = userRelY - refRelY; // positive = user is too low
-    const xDiff = userRelX - refRelX; // positive = user is too far right
+    const yDiff = (user.y - userBase.y) - (ref.y - refBase.y);
+    const xDiff = (user.x - userBase.x) - (ref.x - refBase.x);
 
     const label = seg.label;
 
-    // Determine the most significant correction
-    const absY = Math.abs(yDiff);
-    const absX = Math.abs(xDiff);
-
-    if (absY > absX && absY > 0.04) {
-        if (yDiff > 0) {
-            return `Raise your ${label} higher`;
-        } else {
-            return `Lower your ${label} a bit`;
-        }
-    } else if (absX > 0.04) {
-        // In webcam (mirrored), left/right is flipped for user
-        if (xDiff > 0) {
-            return `Bring your ${label} more to the left`;
-        } else {
-            return `Extend your ${label} more to the right`;
-        }
+    if (Math.abs(yDiff) > Math.abs(xDiff) && Math.abs(yDiff) > 0.04) {
+        return yDiff > 0 ? `${label} higher` : `${label} lower`;
     }
-
-    return `Adjust your ${label} position`;
+    if (Math.abs(xDiff) > 0.04) {
+        return xDiff > 0 ? `${label} left` : `${label} right`;
+    }
+    return `adjust ${label}`;
 }
 
 /**
- * Generate a voice cue from current comparison data.
- * Called every comparison frame — internally handles cooldown.
- *
- * @param {Object} comparison - { overall, segments }
- * @param {Array} refLandmarks - Reference landmarks
- * @param {Array} userLandmarks - User landmarks
+ * Generate and speak a voice cue. Called every comparison frame.
  */
 export function generateVoiceCue(comparison, refLandmarks, userLandmarks) {
-    if (!enabled || !comparison) return;
+    if (!enabled || !comparison || !window.speechSynthesis) return;
 
     const now = Date.now();
     if (now - lastSpeakTime < COOLDOWN_MS) return;
 
-    // Find the worst-scoring segment
+    // Find worst segment
     let worstSeg = null;
     let worstScore = 100;
-
     for (const [key, score] of Object.entries(comparison.segments)) {
         if (score === null) continue;
-        if (score < worstScore) {
-            worstScore = score;
-            worstSeg = key;
-        }
+        if (score < worstScore) { worstScore = score; worstSeg = key; }
     }
 
-    // Don't speak if everything is above threshold
-    if (worstScore >= SCORE_THRESHOLD_SPEAK) {
-        // Occasional praise
-        if (comparison.overall >= SCORE_THRESHOLD_PRAISE && now - lastSpeakTime > 8000) {
-            speak("Great form! You're nailing it!");
-            lastSpeakTime = now;
+    if (worstScore >= SCORE_THRESHOLD) {
+        // Occasional praise (every 3rd chance)
+        if (comparison.overall >= PRAISE_THRESHOLD && now - lastSpeakTime > 8000) {
+            spokenCount++;
+            if (spokenCount % 3 === 0) {
+                speak('Nice!');
+                lastSpeakTime = now;
+            }
         }
         return;
     }
 
-    // Don't repeat the same segment back-to-back
-    if (worstSeg === lastSpokenSegment && now - lastSpeakTime < COOLDOWN_MS * 2) return;
+    // Avoid repeating same segment twice in a row
+    if (worstSeg === lastSpokenSegment && now - lastSpeakTime < COOLDOWN_MS * 2.5) return;
 
-    // Get specific directional feedback
-    let message = null;
-    if (refLandmarks && userLandmarks) {
-        message = analyzeDifference(refLandmarks, userLandmarks, worstSeg);
-    }
-
-    if (!message) {
-        const label = SEGMENT_TO_JOINTS[worstSeg]?.label || worstSeg;
-        message = `Watch your ${label}`;
-    }
-
-    speak(message);
+    const cue = getShortCue(worstSeg, refLandmarks, userLandmarks);
+    speak(cue);
     lastSpeakTime = now;
     lastSpokenSegment = worstSeg;
+    spokenCount++;
 }
 
-/**
- * Speak a message using Web Speech API
- */
 function speak(text) {
-    if (!window.speechSynthesis) return;
+    const synth = window.speechSynthesis;
+    if (!synth) return;
 
-    // Cancel any queued speech
-    window.speechSynthesis.cancel();
+    // Cancel any pending speech immediately
+    synth.cancel();
 
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate = 1.1;  // Slightly faster for responsiveness
-    utterance.pitch = 1.0;
-    utterance.volume = 0.85;
-
-    // Try to pick a good voice
-    const voices = window.speechSynthesis.getVoices();
-    const preferred = voices.find(v =>
-        v.name.includes('Samantha') || v.name.includes('Karen') ||
-        v.name.includes('Daniel') || v.name.includes('Google')
-    );
-    if (preferred) utterance.voice = preferred;
-
-    window.speechSynthesis.speak(utterance);
+    const u = new SpeechSynthesisUtterance(text);
+    u.rate = 1.3;      // Fast
+    u.pitch = 1.05;
+    u.volume = 0.8;
+    if (preferredVoice) u.voice = preferredVoice;
+    synth.speak(u);
 }
 
-/**
- * Enable/disable voice coaching
- */
 export function setAudioCoachEnabled(val) {
     enabled = val;
-    if (!val) {
-        window.speechSynthesis?.cancel();
-    }
+    if (!val) window.speechSynthesis?.cancel();
 }
 
-export function isAudioCoachEnabled() {
-    return enabled;
-}
+export function isAudioCoachEnabled() { return enabled; }
 
-/**
- * Reset state (between sessions)
- */
 export function resetAudioCoach() {
     lastSpeakTime = 0;
     lastSpokenSegment = null;
+    spokenCount = 0;
     window.speechSynthesis?.cancel();
 }
