@@ -97,10 +97,13 @@ function buildPrompt(overallAvg, focusAreas, strengths, timeline, segmentStats) 
 }
 
 /**
- * Check if an API key is stored
+ * Check if an API key is available (env var > localStorage)
  */
 export function getStoredApiKey() {
     try {
+        // Prefer env variable (set in .env as VITE_NEMOTRON_API_KEY)
+        const envKey = import.meta.env.VITE_NEMOTRON_API_KEY;
+        if (envKey) return envKey;
         return localStorage.getItem('nemotron_api_key') || '';
     } catch {
         return '';
