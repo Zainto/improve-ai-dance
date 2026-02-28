@@ -5,6 +5,14 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: 5174,
-    open: false
+    open: false,
+    proxy: {
+      '/api/nvidia': {
+        target: 'https://integrate.api.nvidia.com',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/nvidia/, '/v1'),
+        secure: true,
+      }
+    }
   }
 })

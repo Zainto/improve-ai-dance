@@ -6,7 +6,7 @@
  * Model: nvidia/llama-3.1-nemotron-70b-instruct
  */
 
-const API_URL = 'https://integrate.api.nvidia.com/v1/chat/completions';
+const API_URL = '/api/nvidia/chat/completions';   // Proxied via Vite to avoid CORS
 const MODEL = 'nvidia/llama-3.1-nemotron-70b-instruct';
 
 /**

@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import VideoPlayer from './components/VideoPlayer';
 import WebcamFeed from './components/WebcamFeed';
+import UserVideo from './components/UserVideo';
 import ScoreDisplay from './components/ScoreDisplay';
 import SessionSummary from './components/SessionSummary';
 import { comparePoses } from './utils/poseSimilarity';
@@ -21,9 +22,12 @@ export default function App() {
     const [sessionTime, setSessionTime] = useState(0);
     const [voiceCoach, setVoiceCoach] = useState(true);
     const [recordingUrl, setRecordingUrl] = useState(null);
+    const [inputMode, setInputMode] = useState('webcam'); // 'webcam' or 'video'
+    const [userVideoFile, setUserVideoFile] = useState(null);
 
     const videoPlayerRef = useRef(null);
     const webcamRef = useRef(null);
+    const userVideoRef = useRef(null);
     const comparisonLoopRef = useRef(null);
     const sessionTimerRef = useRef(null);
     const sampleCountRef = useRef(0);
@@ -61,7 +65,7 @@ export default function App() {
         setSessionTime(0);
         sampleCountRef.current = 0;
         resetAudioCoach();
-        initVoices(); // Pre-load TTS voices
+        initVoices();
         clearRecording();
         setRecordingUrl(null);
 
@@ -71,11 +75,19 @@ export default function App() {
             videoPlayerRef.current.play();
         }
 
-        // Start recording webcam (with small delay for stream to be ready)
-        setTimeout(() => {
-            const stream = webcamRef.current?.getStream();
-            if (stream) startRecording(stream);
-        }, 500);
+        // If video mode, start user video in sync
+        if (inputMode === 'video' && userVideoRef.current) {
+            userVideoRef.current.seekTo(0);
+            userVideoRef.current.play();
+        }
+
+        // Start recording webcam (only in webcam mode)
+        if (inputMode === 'webcam') {
+            setTimeout(() => {
+                const stream = webcamRef.current?.getStream();
+                if (stream) startRecording(stream);
+            }, 500);
+        }
 
         // Session timer
         sessionTimerRef.current = setInterval(() => {
@@ -85,17 +97,15 @@ export default function App() {
         // Comparison loop — compare poses every ~100ms
         comparisonLoopRef.current = setInterval(() => {
             const refPose = videoPlayerRef.current?.getCurrentPose();
-            const userPose = webcamRef.current?.getCurrentPose();
+            const userRef = inputMode === 'video' ? userVideoRef : webcamRef;
+            const userPose = userRef.current?.getCurrentPose();
 
             if (refPose && userPose) {
                 const result = comparePoses(refPose, userPose);
                 if (result) {
                     setComparison(result);
-
-                    // Real-time voice coaching
                     generateVoiceCue(result, refPose, userPose);
 
-                    // Sample every 3rd comparison for session history
                     sampleCountRef.current++;
                     if (sampleCountRef.current % 3 === 0) {
                         setSessionData(prev => [...prev, result]);
@@ -103,7 +113,7 @@ export default function App() {
                 }
             }
         }, 100);
-    }, []);
+    }, [inputMode]);
 
     const handleStop = useCallback(async () => {
         resetAudioCoach();
@@ -263,12 +273,22 @@ export default function App() {
                             videoFile={videoFile}
                             speed={speed}
                         />
-                        <WebcamFeed
-                            ref={webcamRef}
-                            isActive={isActive}
-                            segmentScores={comparison?.segments}
-                            mirrored={mirrored}
-                        />
+                        {inputMode === 'webcam' ? (
+                            <WebcamFeed
+                                ref={webcamRef}
+                                isActive={isActive}
+                                segmentScores={comparison?.segments}
+                                mirrored={mirrored}
+                            />
+                        ) : (
+                            <UserVideo
+                                ref={userVideoRef}
+                                videoFile={userVideoFile}
+                                isActive={isActive}
+                                segmentScores={comparison?.segments}
+                                speed={speed}
+                            />
+                        )}
                     </div>
 
                     {/* Score Display */}
@@ -287,7 +307,7 @@ export default function App() {
                                 </button>
                             )}
 
-                            {/* New video */}
+                            {/* New ref video */}
                             <button
                                 className="btn btn-outline"
                                 onClick={() => {
@@ -295,13 +315,52 @@ export default function App() {
                                     document.getElementById('file-input-practice').click();
                                 }}
                             >
-                                📁 New Video
+                                📁 Ref Video
                             </button>
                             <input
                                 id="file-input-practice"
                                 type="file"
                                 accept="video/*"
                                 onChange={handleFileInput}
+                                style={{ display: 'none' }}
+                            />
+
+                            {/* Input mode toggle */}
+                            <div style={{
+                                display: 'flex', borderRadius: '10px', overflow: 'hidden',
+                                border: '1px solid var(--border)', fontSize: '13px'
+                            }}>
+                                <button
+                                    style={{
+                                        padding: '6px 14px', border: 'none', cursor: 'pointer',
+                                        background: inputMode === 'webcam' ? 'var(--accent-1)' : 'transparent',
+                                        color: inputMode === 'webcam' ? '#fff' : 'var(--text-muted)',
+                                        fontWeight: inputMode === 'webcam' ? 600 : 400, fontFamily: 'var(--font)',
+                                    }}
+                                    onClick={() => setInputMode('webcam')}
+                                >📷 Webcam</button>
+                                <button
+                                    style={{
+                                        padding: '6px 14px', border: 'none', cursor: 'pointer',
+                                        borderLeft: '1px solid var(--border)',
+                                        background: inputMode === 'video' ? 'var(--accent-1)' : 'transparent',
+                                        color: inputMode === 'video' ? '#fff' : 'var(--text-muted)',
+                                        fontWeight: inputMode === 'video' ? 600 : 400, fontFamily: 'var(--font)',
+                                    }}
+                                    onClick={() => {
+                                        setInputMode('video');
+                                        if (!userVideoFile) document.getElementById('user-video-input').click();
+                                    }}
+                                >📤 Upload Video</button>
+                            </div>
+                            <input
+                                id="user-video-input"
+                                type="file"
+                                accept="video/*"
+                                onChange={(e) => {
+                                    const f = e.target.files?.[0];
+                                    if (f) { setUserVideoFile(f); setInputMode('video'); }
+                                }}
                                 style={{ display: 'none' }}
                             />
                         </div>
