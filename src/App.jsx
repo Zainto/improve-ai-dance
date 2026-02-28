@@ -106,26 +106,29 @@ export default function App() {
     }, []);
 
     const handleStop = useCallback(async () => {
-        setIsActive(false);
         resetAudioCoach();
+
+        // Stop timers and comparison FIRST
+        if (comparisonLoopRef.current) {
+            clearInterval(comparisonLoopRef.current);
+            comparisonLoopRef.current = null;
+        }
+        if (sessionTimerRef.current) {
+            clearInterval(sessionTimerRef.current);
+            sessionTimerRef.current = null;
+        }
 
         if (videoPlayerRef.current) {
             videoPlayerRef.current.pause();
         }
 
-        // Stop recording and get URL
+        // Stop recording BEFORE killing the webcam stream
+        // (setIsActive(false) triggers WebcamFeed to destroy the stream)
         const recUrl = await stopRecording();
         if (recUrl) setRecordingUrl(recUrl);
 
-        if (comparisonLoopRef.current) {
-            clearInterval(comparisonLoopRef.current);
-            comparisonLoopRef.current = null;
-        }
-
-        if (sessionTimerRef.current) {
-            clearInterval(sessionTimerRef.current);
-            sessionTimerRef.current = null;
-        }
+        // NOW deactivate webcam (kills stream)
+        setIsActive(false);
 
         // Show summary if we have enough data
         if (sessionData.length > 5) {
