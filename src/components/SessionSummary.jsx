@@ -243,6 +243,8 @@ export default function SessionSummary({ sessionData, onClose, recordingUrl, vid
                                     controls
                                     playsInline
                                     muted
+                                    preload="auto"
+                                    onError={(e) => console.error('Ref video error:', e)}
                                     style={{ width: '100%', borderRadius: '10px', background: '#000' }}
                                 />
                                 <span style={{
@@ -260,6 +262,8 @@ export default function SessionSummary({ sessionData, onClose, recordingUrl, vid
                                     controls
                                     playsInline
                                     muted
+                                    preload="auto"
+                                    onError={(e) => console.error('Rec video error:', e)}
                                     style={{ width: '100%', borderRadius: '10px', background: '#000' }}
                                 />
                                 <span style={{
