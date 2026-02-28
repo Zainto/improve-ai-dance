@@ -2,7 +2,7 @@ import { useRef, useEffect, useState, useCallback, forwardRef, useImperativeHand
 import { PoseLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
 import { drawSkeleton, smoothLandmarks, resetSmoothing, isPoseValid } from '../utils/skeletonRenderer';
 
-const MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task';
+const MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task';
 const WASM_URL = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm';
 
 /**
@@ -27,6 +27,8 @@ const WebcamFeed = forwardRef(function WebcamFeed({ isActive, segmentScores, mir
     useImperativeHandle(ref, () => ({
         getCurrentPose: () => currentPoseRef.current,
         getStream: () => streamRef.current,
+        getVideoEl: () => videoRef.current,
+        getCanvasEl: () => canvasRef.current,
     }));
 
     // Init MediaPipe

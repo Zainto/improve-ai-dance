@@ -92,6 +92,18 @@ export default function SessionSummary({ sessionData, onClose, recordingUrl, vid
         if (recVideoRef.current) recVideoRef.current.play();
     };
 
+    // Seek both videos to a time (used by clickable timestamps in AI feedback)
+    const seekToTime = useCallback((seconds) => {
+        if (refVideoRef.current) {
+            refVideoRef.current.currentTime = seconds;
+            refVideoRef.current.pause();
+        }
+        if (recVideoRef.current) {
+            recVideoRef.current.currentTime = seconds;
+            recVideoRef.current.pause();
+        }
+    }, []);
+
     // Sync playback
     useEffect(() => {
         const ref = refVideoRef.current;
@@ -248,7 +260,7 @@ export default function SessionSummary({ sessionData, onClose, recordingUrl, vid
                                     controls
                                     playsInline
                                     muted
-                                    style={{ width: '100%', borderRadius: '10px', background: '#000', transform: 'scaleX(-1)' }}
+                                    style={{ width: '100%', borderRadius: '10px', background: '#000' }}
                                 />
                                 <span style={{
                                     position: 'absolute', top: '8px', left: '8px', padding: '2px 10px',
@@ -270,7 +282,7 @@ export default function SessionSummary({ sessionData, onClose, recordingUrl, vid
             <div className="card" style={{ marginBottom: '16px', border: '1px solid rgba(118,185,0,0.3)' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
                     <div className="card-title" style={{ marginBottom: 0 }}>
-                        🧠 AI Coach Feedback <span style={{ fontSize: '10px', color: '#76b900', fontWeight: 500, marginLeft: '4px' }}>powered by NVIDIA Nemotron</span>
+                        🧠 AI Coach Feedback <span style={{ fontSize: '10px', color: '#76b900', fontWeight: 500, marginLeft: '4px' }}>powered by NVIDIA Nemotron + PoseScript</span>
                     </div>
                     <button
                         className="btn btn-primary"
@@ -315,16 +327,15 @@ export default function SessionSummary({ sessionData, onClose, recordingUrl, vid
                     <div className="fade-in" style={{
                         padding: '16px', background: 'rgba(118,185,0,0.06)', borderRadius: '10px',
                         border: '1px solid rgba(118,185,0,0.15)', lineHeight: 1.7, fontSize: '14px',
-                        color: 'var(--text-secondary)', whiteSpace: 'pre-wrap'
+                        color: 'var(--text-secondary)',
                     }}>
-                        {aiResponse}
+                        {renderAIFeedback(aiResponse, seekToTime)}
                     </div>
                 )}
 
                 {!aiResponse && !aiLoading && !showKeyInput && (
                     <p style={{ fontSize: '13px', color: 'var(--text-muted)' }}>
-                        Get personalized coaching advice powered by NVIDIA's Nemotron AI model.
-                        Requires an API key from <a href="https://build.nvidia.com" target="_blank" rel="noopener" style={{ color: '#76b900' }}>build.nvidia.com</a>
+                        Get personalized coaching advice powered by NVIDIA's Nemotron AI model with PoseScript-style body awareness.
                     </p>
                 )}
             </div>
@@ -443,4 +454,130 @@ export default function SessionSummary({ sessionData, onClose, recordingUrl, vid
             )}
         </div>
     );
+}
+
+/**
+ * Render AI feedback with formatted sections, bold text, and clickable timestamps.
+ */
+function renderAIFeedback(text, onSeekToTime) {
+    if (!text) return null;
+
+    const lines = text.split('\n');
+    const elements = [];
+
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (!line) { elements.push(<div key={i} style={{ height: '8px' }} />); continue; }
+
+        // Headers (## or standalone **Header**)
+        const h2Match = line.match(/^#{1,3}\s+(.+)$/);
+        const boldLineMatch = !h2Match && line.match(/^\*\*([^*]+)\*\*$/);
+        if (h2Match || boldLineMatch) {
+            const title = h2Match ? h2Match[1] : boldLineMatch[1];
+            elements.push(
+                <div key={i} style={{
+                    fontWeight: 700, fontSize: '15px', color: 'var(--text-primary)',
+                    marginTop: i > 0 ? '14px' : '0', marginBottom: '6px',
+                    borderBottom: '1px solid rgba(118,185,0,0.2)', paddingBottom: '6px'
+                }}>
+                    {title.replace(/\*\*/g, '')}
+                </div>
+            );
+            continue;
+        }
+
+        // Numbered items (1. 2. 3.)
+        const numMatch = line.match(/^(\d+)\.\s+(.+)$/);
+        if (numMatch) {
+            elements.push(
+                <div key={i} style={{
+                    display: 'flex', gap: '10px', marginTop: '10px', marginBottom: '4px'
+                }}>
+                    <span style={{
+                        background: 'var(--accent-1)', color: '#fff', borderRadius: '50%',
+                        width: '22px', height: '22px', display: 'flex', alignItems: 'center',
+                        justifyContent: 'center', fontSize: '12px', fontWeight: 700, flexShrink: 0
+                    }}>{numMatch[1]}</span>
+                    <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
+                        {renderInlineText(numMatch[2], onSeekToTime)}
+                    </span>
+                </div>
+            );
+            continue;
+        }
+
+        // Bullet items
+        const bulletMatch = line.match(/^[-•]\s+(.+)$/);
+        if (bulletMatch) {
+            elements.push(
+                <div key={i} style={{
+                    display: 'flex', gap: '8px', paddingLeft: '8px', marginTop: '4px'
+                }}>
+                    <span style={{ color: 'var(--accent-1)', fontWeight: 700 }}>›</span>
+                    <span>{renderInlineText(bulletMatch[1], onSeekToTime)}</span>
+                </div>
+            );
+            continue;
+        }
+
+        // Regular text
+        elements.push(
+            <div key={i} style={{ marginTop: '2px' }}>
+                {renderInlineText(line, onSeekToTime)}
+            </div>
+        );
+    }
+
+    return elements;
+}
+
+/** Render inline text with **bold** and clickable timestamps */
+function renderInlineText(text, onSeekToTime) {
+    const parts = [];
+    const regex = /(\*\*[^*]+\*\*)|(?<=\s|^)(\d{1,3}s(?:-\d{1,3}s)?)(?=[\s,.)!?]|$)/g;
+    let lastIdx = 0;
+    let match;
+
+    while ((match = regex.exec(text)) !== null) {
+        if (match.index > lastIdx) {
+            parts.push(<span key={`t${lastIdx}`}>{text.slice(lastIdx, match.index)}</span>);
+        }
+
+        if (match[1]) {
+            const boldText = match[1].slice(2, -2);
+            parts.push(
+                <span key={`b${match.index}`} style={{ fontWeight: 700, color: 'var(--text-primary)' }}>
+                    {boldText}
+                </span>
+            );
+        } else if (match[2]) {
+            const tsText = match[2];
+            const seconds = parseInt(tsText.split('s')[0], 10);
+            parts.push(
+                <button
+                    key={`ts${match.index}`}
+                    onClick={() => onSeekToTime && onSeekToTime(seconds)}
+                    title={`Jump to ${tsText} in the video`}
+                    style={{
+                        display: 'inline-flex', alignItems: 'center', gap: '3px',
+                        background: 'rgba(168,85,247,0.15)', color: '#a855f7',
+                        border: '1px solid rgba(168,85,247,0.3)', borderRadius: '6px',
+                        padding: '1px 8px', fontSize: '12px', fontWeight: 600,
+                        cursor: 'pointer', fontFamily: 'var(--font)',
+                        transition: 'all 0.15s ease', verticalAlign: 'middle',
+                    }}
+                >
+                    ⏱ {tsText}
+                </button>
+            );
+        }
+
+        lastIdx = match.index + match[0].length;
+    }
+
+    if (lastIdx < text.length) {
+        parts.push(<span key={`e${lastIdx}`}>{text.slice(lastIdx)}</span>);
+    }
+
+    return parts.length > 0 ? parts : text;
 }

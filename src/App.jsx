@@ -82,12 +82,13 @@ export default function App() {
             userVideoRef.current.play();
         }
 
-        // Start recording webcam (only in webcam mode)
+        // Start recording webcam composite (video + skeleton overlay)
         if (inputMode === 'webcam') {
             setTimeout(() => {
-                const stream = webcamRef.current?.getStream();
-                if (stream) startRecording(stream);
-            }, 500);
+                const videoEl = webcamRef.current?.getVideoEl();
+                const canvasEl = webcamRef.current?.getCanvasEl();
+                if (videoEl) startRecording(videoEl, canvasEl);
+            }, 800);
         }
 
         // Session timer
