@@ -1,61 +1,53 @@
 /**
- * Pose Similarity v2 — Multi-signal comparison engine
+ * Pose Similarity v3 — Balanced comparison engine
  *
- * Uses THREE comparison methods for accuracy:
- * 1. Joint angle matching (elbow bend, knee bend, etc.)
- * 2. Relative position matching (where joints are relative to torso)
- * 3. Vector direction matching (limb orientation)
- *
- * This catches issues the old cosine-only approach missed:
- * - Arm at same angle but different height → now penalized
- * - Correct direction but wrong bend amount → now penalized
+ * Uses joint angle matching + position matching + direction,
+ * with curves calibrated so that:
+ * - Standing still while reference dances = ~30-50%
+ * - Roughly following the dance = ~60-75%
+ * - Good dancing = ~75-85%
+ * - Near-perfect = ~85-95%
  */
 
-import { normalizePose, distance } from './poseNormalizer';
+import { normalizePose } from './poseNormalizer';
 
 // ─── Body Segment Definitions ───
 export const BODY_SEGMENTS = {
     leftArm: {
         joints: [11, 13, 15],   // shoulder → elbow → wrist
-        positions: [11, 13, 15],
         label: 'Left Arm', weight: 1.5, emoji: '💪'
     },
     rightArm: {
-        joints: [12, 14, 16],   // shoulder → elbow → wrist
-        positions: [12, 14, 16],
+        joints: [12, 14, 16],
         label: 'Right Arm', weight: 1.5, emoji: '💪'
     },
     leftLeg: {
         joints: [23, 25, 27],   // hip → knee → ankle
-        positions: [23, 25, 27],
         label: 'Left Leg', weight: 1.5, emoji: '🦵'
     },
     rightLeg: {
-        joints: [24, 26, 28],   // hip → knee → ankle
-        positions: [24, 26, 28],
+        joints: [24, 26, 28],
         label: 'Right Leg', weight: 1.5, emoji: '🦵'
     },
     torso: {
-        joints: [11, 12, 23, 24], // shoulders and hips
-        positions: [11, 12, 23, 24],
+        joints: [11, 12, 23, 24],
         label: 'Torso', weight: 1.0, emoji: '🫁',
-        useTorsoAngles: true
+        isTorso: true
     },
     head: {
-        joints: [0, 11, 12],    // nose → shoulders
-        positions: [0, 7, 8],   // nose, ears
-        label: 'Head', weight: 0.5, emoji: '🗣️'
+        joints: [0, 11, 12],
+        label: 'Head', weight: 0.5, emoji: '🗣️',
+        isHead: true
     },
 };
 
-// ─── Math helpers ───
+// ─── Math ───
 
 function vec(a, b) {
-    return { x: b.x - a.x, y: b.y - a.y, z: b.z - a.z };
+    return { x: b.x - a.x, y: b.y - a.y, z: (b.z || 0) - (a.z || 0) };
 }
 
-function angleBetween3(a, b, c) {
-    // Angle at point b formed by a-b-c, in degrees
+function angleDeg(a, b, c) {
     const v1 = vec(b, a);
     const v2 = vec(b, c);
     const dot = v1.x * v2.x + v1.y * v2.y + v1.z * v2.z;
@@ -73,138 +65,105 @@ function cosineSim(v1, v2) {
     return dot / (m1 * m2);
 }
 
-function positionDistance(a, b) {
-    return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2 + (a.z - b.z) ** 2);
+function dist(a, b) {
+    return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2 + ((a.z || 0) - (b.z || 0)) ** 2);
 }
 
-function minVisibility(norm, indices) {
-    return Math.min(...indices.map(i => norm[i]?.visibility || 0));
-}
+// ─── Scoring (calibrated for realistic results) ───
 
-// ─── Scoring functions ───
-
-/**
- * Score based on joint angle difference (0-100)
- * An angle difference of 0° → 100, 45° → ~50, 90° → 0
- */
+/** Angle score: 0° diff → 100, 30° → 70, 60° → 40, 90° → 10 */
 function angleScore(refAngle, userAngle) {
     const diff = Math.abs(refAngle - userAngle);
-    return Math.max(0, 100 - (diff * 2.2)); // 45° diff = ~1% score
+    return Math.max(0, 100 * Math.exp(-diff * diff / 3000));
+    // Gaussian: gentle falloff, 30° diff ≈ 74%, 45° ≈ 51%, 90° ≈ 7%
 }
 
-/**
- * Score based on normalized position distance (0-100)
- * After normalization, distances are relative to torso length
- * A distance of 0 → 100, 0.5 → ~50, 1.0 → ~0
- */
-function positionScore(refPt, userPt) {
-    const d = positionDistance(refPt, userPt);
-    return Math.max(0, 100 * Math.exp(-d * 3)); // Exponential falloff
+/** Position score: 0 dist → 100, uses gentle exponential */
+function posScore(refPt, userPt) {
+    const d = dist(refPt, userPt);
+    return Math.max(0, 100 * Math.exp(-d * 1.5));
+    // 0.3 dist ≈ 64%, 0.5 ≈ 47%, 1.0 ≈ 22%
 }
 
-/**
- * Score based on vector direction similarity (0-100)
- */
-function directionScore(refA, refB, userA, userB) {
-    const refV = vec(refA, refB);
-    const userV = vec(userA, userB);
-    const sim = cosineSim(refV, userV);
-    return Math.max(0, ((sim + 1) / 2) * 100);
+/** Direction score: cosine sim mapped to 0-100 */
+function dirScore(refA, refB, userA, userB) {
+    const rv = vec(refA, refB);
+    const uv = vec(userA, userB);
+    const sim = cosineSim(rv, uv);
+    // sim: -1 to 1 → 0 to 100, but use sqrt mapping for gentler curve
+    const raw = (sim + 1) / 2; // 0 to 1
+    return Math.pow(raw, 0.7) * 100; // Softer curve
+}
+
+function minVis(norm, indices) {
+    return Math.min(...indices.map(i => norm[i]?.visibility ?? 0));
 }
 
 // ─── Main comparison ───
 
-/**
- * Compare two poses using multi-signal scoring.
- *
- * @param {Array} refLandmarks - Reference pose landmarks
- * @param {Array} userLandmarks - User's pose landmarks
- * @returns {Object} { overall: 0-100, segments: { leftArm: 0-100, ... }, timestamp }
- */
 export function comparePoses(refLandmarks, userLandmarks) {
-    const refNorm = normalizePose(refLandmarks);
-    const userNorm = normalizePose(userLandmarks);
-
-    if (!refNorm || !userNorm) return null;
+    const refN = normalizePose(refLandmarks);
+    const userN = normalizePose(userLandmarks);
+    if (!refN || !userN) return null;
 
     const segmentScores = {};
 
     for (const [name, seg] of Object.entries(BODY_SEGMENTS)) {
-        const vis = minVisibility(refNorm, seg.joints) + minVisibility(userNorm, seg.joints);
-        if (vis < 0.8) { // Both need decent visibility
-            segmentScores[name] = null;
-            continue;
-        }
+        const vis = Math.min(minVis(refN, seg.joints), minVis(userN, seg.joints));
+        if (vis < 0.3) { segmentScores[name] = null; continue; }
 
-        const scores = [];
+        let score;
 
-        if (seg.useTorsoAngles) {
-            // Torso: compare shoulder-hip angles
-            const refShoulderAngle = angleBetween3(refNorm[11], refNorm[23], refNorm[24]);
-            const userShoulderAngle = angleBetween3(userNorm[11], userNorm[23], userNorm[24]);
-            scores.push(angleScore(refShoulderAngle, userShoulderAngle));
-
-            const refHipAngle = angleBetween3(refNorm[12], refNorm[24], refNorm[23]);
-            const userHipAngle = angleBetween3(userNorm[12], userNorm[24], userNorm[23]);
-            scores.push(angleScore(refHipAngle, userHipAngle));
-
-            // Position of shoulders relative to hips
-            scores.push(positionScore(refNorm[11], userNorm[11]));
-            scores.push(positionScore(refNorm[12], userNorm[12]));
-        } else if (seg.joints.length >= 3) {
-            // Limbs: use joint angle at the middle joint (elbow/knee)
+        if (seg.isTorso) {
+            // Torso: shoulder and hip position matching
+            const s1 = posScore(refN[11], userN[11]);
+            const s2 = posScore(refN[12], userN[12]);
+            const s3 = posScore(refN[23], userN[23]);
+            const s4 = posScore(refN[24], userN[24]);
+            score = (s1 + s2 + s3 + s4) / 4;
+        } else if (seg.isHead) {
+            // Head: mainly nose position
+            score = posScore(refN[0], userN[0]);
+        } else {
+            // Limbs: blend of angle + position + direction
             const [a, b, c] = seg.joints;
-            const refAngle = angleBetween3(refNorm[a], refNorm[b], refNorm[c]);
-            const userAngle = angleBetween3(userNorm[a], userNorm[b], userNorm[c]);
 
-            // Weight: 40% angle, 35% position, 25% direction
-            scores.push(angleScore(refAngle, userAngle) * 0.4);
+            const refAngle = angleDeg(refN[a], refN[b], refN[c]);
+            const userAngle = angleDeg(userN[a], userN[b], userN[c]);
+            const aScore = angleScore(refAngle, userAngle);
 
-            // Position of endpoint (wrist/ankle) relative to body center
-            scores.push(positionScore(refNorm[c], userNorm[c]) * 0.35);
+            // Position of wrist/ankle (endpoint)
+            const pScore = posScore(refN[c], userN[c]);
 
-            // Direction of the limb segments
-            const dir1 = directionScore(refNorm[a], refNorm[b], userNorm[a], userNorm[b]);
-            const dir2 = directionScore(refNorm[b], refNorm[c], userNorm[b], userNorm[c]);
-            scores.push(((dir1 + dir2) / 2) * 0.25);
-        } else {
-            // Head or simple segments: mainly position
-            for (const idx of seg.positions) {
-                if (refNorm[idx] && userNorm[idx]) {
-                    scores.push(positionScore(refNorm[idx], userNorm[idx]));
-                }
-            }
+            // Direction of upper + lower limb segments
+            const d1 = dirScore(refN[a], refN[b], userN[a], userN[b]);
+            const d2 = dirScore(refN[b], refN[c], userN[b], userN[c]);
+            const dScore = (d1 + d2) / 2;
+
+            // Blend: 35% angle, 30% position, 35% direction
+            score = aScore * 0.35 + pScore * 0.30 + dScore * 0.35;
         }
 
-        if (scores.length === 0) {
-            segmentScores[name] = null;
-        } else {
-            const total = scores.reduce((a, b) => a + b, 0);
-            // For weighted limbs, the weights already sum to 1.0
-            const avg = seg.useTorsoAngles || seg.joints.length < 3
-                ? total / scores.length
-                : total; // Already weighted to sum to 1.0
-            segmentScores[name] = Math.max(0, Math.min(100, avg));
-        }
+        segmentScores[name] = Math.max(0, Math.min(100, Math.round(score * 10) / 10));
     }
 
     // Overall = weighted average
-    let weightedSum = 0, weightTotal = 0;
+    let wSum = 0, wTotal = 0;
     for (const [name, score] of Object.entries(segmentScores)) {
         if (score === null) continue;
         const w = BODY_SEGMENTS[name].weight;
-        weightedSum += score * w;
-        weightTotal += w;
+        wSum += score * w;
+        wTotal += w;
     }
 
     return {
-        overall: weightTotal > 0 ? Math.round((weightedSum / weightTotal) * 10) / 10 : 0,
+        overall: wTotal > 0 ? Math.round((wSum / wTotal) * 10) / 10 : 0,
         segments: segmentScores,
         timestamp: Date.now()
     };
 }
 
-// ─── Utility exports ───
+// ─── Utilities ───
 
 export function scoreToColor(score) {
     if (score === null) return '#64748b';
