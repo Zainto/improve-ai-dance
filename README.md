@@ -1,4 +1,4 @@
-# 💃 DanceCoach AI
+# 💃 stuff
 
 **See yourself dance better — in real time.**
 
